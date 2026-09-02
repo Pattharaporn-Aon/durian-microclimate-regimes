@@ -1,0 +1,66 @@
+name: Run analysis pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'outputs_regimes/**'
+  workflow_dispatch:        # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write           # needed to commit the generated figures back
+
+# If a newer push arrives while this run is still going, cancel the older run
+# so two runs can never race to push to main at the same time.
+concurrency:
+  group: run-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history, so `git pull --rebase` works
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the analysis pipeline
+        run: python src/weather_regimes.py
+
+      - name: Upload outputs as a downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-outputs
+          path: outputs_regimes/
+
+      - name: Commit generated figures back to the repo
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add outputs_regimes/
+          if git diff --staged --quiet; then
+            echo "Outputs unchanged - nothing to commit."
+            exit 0
+          fi
+          git commit -m "CI: regenerate analysis outputs [skip ci]"
+
+          # main may have moved on while the pipeline was running.
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              echo "Pushed analysis outputs successfully."
+              exit 0
+            fi
+            echo "Push attempt $attempt failed - retrying in 10s..."
+            sleep 10
+          done
+
+          echo "Could not push analysis outputs after 3 attempts."
+          exit 1
