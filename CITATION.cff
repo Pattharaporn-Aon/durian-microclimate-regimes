@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software or dataset, please cite it as below."
+title: "Feature Treatment and Bootstrap Stability in Clustering Orchard Microclimate Time Series"
+abstract: >-
+  Analysis code and reproducibility package for the study "Feature treatment and
+  bootstrap stability in clustering orchard microclimate time series". Aggregates a
+  six-month hourly IoT record from a single durian orchard into daily features,
+  contrasts a naive feature treatment against a physics-informed one that log-damps
+  zero-inflated rain and stress-hour counts, and reports cluster-wise bootstrap
+  Jaccard stability, Markov regime dynamics, dry-spell detection and an FAO-56
+  vapour-pressure-deficit provenance check.
+type: software
+authors:
+  - given-names: Pattharaporn
+    family-names: Thongnim
+    email: pattharaporn@buu.ac.th
+    affiliation: "Department of Mathematics, Faculty of Science, Burapha University, Chon Buri, Thailand"
+  - given-names: Phaitoon
+    family-names: Srinil
+    email: phaitoon@buu.ac.th
+    affiliation: "Information Technology and Data Science, Faculty of Science and Arts, Burapha University, Chanthaburi, Thailand"
+license: MIT
+repository-code: "https://github.com/Pattharaporn-Aon/durian-microclimate-regimes"
+keywords:
+  - weather regimes
+  - precision agriculture
+  - Internet of Things
+  - time-series clustering
+  - cluster stability
+  - vapour-pressure deficit
+  - durian
+identifiers:
+  - type: doi
+    value: "10.17605/OSF.IO/7THQ4"
+    description: "OSF archive of the underlying dataset"
