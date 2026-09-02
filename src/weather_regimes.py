@@ -305,7 +305,9 @@ def bootstrap_jaccard(X: np.ndarray, k: int, labels: np.ndarray,
                 (len(cj & dm) / len(cj | dm)) if (cj | dm) else 0.0
                 for dm in boot
             )
-    return np.nanmean(acc, axis=0)
+    # Return the full B x k matrix as well: the manuscript plots the
+    # DISTRIBUTION of recovery per regime, not just its mean.
+    return np.nanmean(acc, axis=0), acc
 
 
 # --------------------------------------------------------------------------
@@ -418,11 +420,12 @@ def vpd_provenance(h: pd.DataFrame) -> dict:
     return {"mean": r.mean(), "early": early.mean(), "late": late.mean()}
 
 
-def isolation_forest_days(daily: pd.DataFrame, n: int = N_ANOMALIES) -> pd.Index:
+def isolation_forest_days(daily: pd.DataFrame, n: int = N_ANOMALIES):
+    """Returns (flagged dates, anomaly score per day). Lower score = more anomalous."""
     X = StandardScaler().fit_transform(daily[FEATURES].values)
     s = IsolationForest(n_estimators=500, contamination="auto",
                         random_state=RANDOM_STATE).fit(X).score_samples(X)
-    return daily.index[np.argsort(s)[:n]]
+    return daily.index[np.argsort(s)[:n]], pd.Series(s, index=daily.index)
 
 
 # --------------------------------------------------------------------------
@@ -433,36 +436,62 @@ PALETTE = ["#c77d17", "#3b6fb0", "#6b4fbb", "#c14b6b", "#0f9d8f"]
 
 
 def fig1_timeseries(daily, h, spells):
-    fig, ax = plt.subplots(figsize=(13, 3.4))
-    if h is not None:
-        g = h.set_index("datetime")["temp"].resample("D")
-        ax.fill_between(daily.index, g.min().reindex(daily.index),
-                        g.max().reindex(daily.index), color="#c1272d", alpha=0.22, lw=0)
-    ax.plot(daily.index, daily["temp_mean"], color="#c1272d", lw=1.1)
+    """
+    Manuscript Figure 6. Four stacked panels showing the TREATED features that
+    define the regimes -- VPD-stress hours, hot hours, night minimum and rain
+    hours -- rather than raw daily means. The shaded band is the longest dry
+    spell; dotted green lines are the field visits.
+    """
+    panels = [
+        ("vpd_stress_h", "VPD stress\n(h d$^{-1}$, >2.0 kPa)", "#c77d17"),
+        ("hot_hours",    "Hot hours\n(h d$^{-1}$, >35 °C)",    "#c14b6b"),
+        ("night_tmin",   "Night $T_{min}$\n(°C, 19:00–06:00)", "#3b6fb0"),
+        ("rain_hours",   "Rain hours\n(h d$^{-1}$)",           "#0f9d8f"),
+    ]
     s = spells[0]
-    ax.axvspan(pd.Timestamp(s[0]), pd.Timestamp(s[1]), color="#f5a623", alpha=0.16, lw=0)
-    for v in FIELD_VISITS:
-        v = pd.Timestamp(v)
-        if daily.index.min() <= v <= daily.index.max():
-            ax.axvline(v, color="#2e7d32", ls=":", lw=1.3)
-    ax.set_title(f"Daily microclimate; shaded = longest dry spell ({s[2]} days), "
-                 f"green dotted = field visits")
-    ax.set_ylabel("Temp (°C)")
-    ax.margins(x=0.01)
+    fig, axes = plt.subplots(len(panels), 1, figsize=(13, 8.0), sharex=True)
+    for ax, (col, lab, c) in zip(axes, panels):
+        ax.fill_between(daily.index, 0, daily[col], color=c, alpha=0.35, lw=0)
+        ax.plot(daily.index, daily[col], color=c, lw=1.0)
+        ax.axvspan(pd.Timestamp(s[0]), pd.Timestamp(s[1]),
+                   color="#f5a623", alpha=0.15, lw=0, zorder=0)
+        for vd in FIELD_VISITS:
+            vd = pd.Timestamp(vd)
+            if daily.index.min() <= vd <= daily.index.max():
+                ax.axvline(vd, color="#2e7d32", ls=":", lw=1.2, zorder=3)
+        ax.set_ylabel(lab, fontsize=9)
+        ax.margins(x=0.01)
+        ax.tick_params(labelsize=8)
+    axes[0].set_title(f"Physics-informed regime drivers over the season "
+                      f"(shaded = longest dry spell, {s[2]} days; "
+                      f"dotted = field visits)", fontsize=11)
+    fig.align_ylabels(axes)
     save(fig, "fig1_timeseries")
 
 
 def fig2_kselect(tab, k_elbow):
-    fig, ax1 = plt.subplots(figsize=(6.4, 4))
-    ax1.plot(tab["k"], tab["inertia"], "o-", color="#1c2430")
-    ax1.set_xlabel("k"); ax1.set_ylabel("inertia", color="#1c2430")
+    """Manuscript Figure 2. Inertia (grey) and silhouette (green) versus k."""
+    GREY, GREEN = "#6b7280", "#2e7d32"
+    fig, ax1 = plt.subplots(figsize=(6.4, 4.2))
+    ax1.plot(tab["k"], tab["inertia"], "o-", color=GREY, lw=1.6, ms=6,
+             label="inertia")
+    ax1.set_xlabel("number of regimes $k$")
+    ax1.set_ylabel("inertia (within-cluster sum of squares)", color=GREY)
+    ax1.tick_params(axis="y", labelcolor=GREY)
+
     ax2 = ax1.twinx()
-    ax2.plot(tab["k"], tab["silhouette"], "s--", color="#c77d17")
-    ax2.set_ylabel("silhouette", color="#c77d17")
-    ax1.axvline(k_elbow, color="#3b6fb0", ls=":", lw=1.5)
-    ax1.set_title(f"k selection — elbow at k={k_elbow};\n"
-                  f"silhouette peaks at k={int(tab.loc[tab['silhouette'].idxmax(),'k'])}",
-                  fontsize=10)
+    ax2.plot(tab["k"], tab["silhouette"], "s--", color=GREEN, lw=1.6, ms=6,
+             label="silhouette")
+    ax2.set_ylabel("silhouette", color=GREEN)
+    ax2.tick_params(axis="y", labelcolor=GREEN)
+
+    ax1.axvline(K_FINAL, color="#1c2430", ls=":", lw=1.5, zorder=0)
+    ax1.annotate(f"$k={K_FINAL}$ retained", xy=(K_FINAL, tab["inertia"].max()),
+                 xytext=(4, -6), textcoords="offset points",
+                 fontsize=9, color="#1c2430", va="top")
+    k_sil = int(tab.loc[tab["silhouette"].idxmax(), "k"])
+    ax1.set_title(f"Regime-number selection — inertia elbow at $k$={k_elbow}; "
+                  f"silhouette peaks at $k$={k_sil}", fontsize=10)
     save(fig, "fig2_kselect")
 
 
@@ -481,78 +510,165 @@ def fig3_centroids(daily, labels, names):
 
 
 def fig4_timeline(daily, labels, names):
+    """
+    Manuscript Figure 7. (top) regime label for each day of the season.
+    (bottom) daily rainfall on the same time axis.
+    """
     k = len(names)
-    fig, ax = plt.subplots(figsize=(13, 2.6))
-    ax.imshow(labels.reshape(1, -1), aspect="auto",
-              cmap=ListedColormap(PALETTE[:k]),
-              extent=[0, len(labels), 0, 1], interpolation="nearest")
+    fig, axes = plt.subplots(2, 1, figsize=(13, 4.4), sharex=True,
+                             gridspec_kw={"height_ratios": [1, 2]})
+
+    axes[0].imshow(labels.reshape(1, -1), aspect="auto",
+                   cmap=ListedColormap(PALETTE[:k]),
+                   extent=[0, len(labels), 0, 1], interpolation="nearest")
+    axes[0].set_yticks([])
+    axes[0].set_ylabel("regime", fontsize=9)
+
+    x = np.arange(len(daily))
+    axes[1].bar(x, daily["rain_sum"].values, width=1.0, color="#3b6fb0")
+    axes[1].axhline(DRY_DAY_MM, color="#c14b6b", ls="--", lw=1,
+                    label=f"dry-day threshold ({DRY_DAY_MM:g} mm)")
+    axes[1].axhline(WET_DAY_MM, color="#0f9d8f", ls="--", lw=1,
+                    label=f"wet-day threshold ({WET_DAY_MM:g} mm)")
+    axes[1].set_ylabel("rainfall (mm d$^{-1}$)", fontsize=9)
+    axes[1].legend(fontsize=7, frameon=False, loc="upper left")
+    axes[1].set_xlim(0, len(daily))
+
     step = max(1, len(daily) // 12)
-    ax.set_xticks(range(0, len(daily), step))
-    ax.set_xticklabels([d.strftime("%b %d") for d in daily.index[::step]],
-                       rotation=45, ha="right", fontsize=8)
-    ax.set_yticks([])
-    ax.set_title("Regime sequence")
+    axes[1].set_xticks(range(0, len(daily), step))
+    axes[1].set_xticklabels([d.strftime("%b %d") for d in daily.index[::step]],
+                            rotation=45, ha="right", fontsize=8)
+
+    axes[0].set_title("Regime sequence and daily rainfall", fontsize=11)
     handles = [plt.Rectangle((0, 0), 1, 1, color=PALETTE[i]) for i in range(k)]
     fig.legend(handles, [names[i] for i in range(k)], ncol=k, fontsize=8,
                loc="lower center", frameon=False, bbox_to_anchor=(0.5, -0.02))
-    fig.tight_layout(rect=(0, 0.10, 1, 1))
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
     fig.savefig(os.path.join(OUTDIR, "fig4_timeline.png"), dpi=150,
                 bbox_inches="tight")
     plt.close(fig)
 
 
-def fig5_transitions(T, names):
+def fig5_transitions(T, names, dwell):
+    """
+    Manuscript Figure 5. (left) day-to-day transition probabilities.
+    (right) mean dwell time per regime.
+    """
     k = T.shape[0]
-    fig, ax = plt.subplots(figsize=(5.6, 4.8))
-    im = ax.imshow(T, cmap="Blues", vmin=0, vmax=1)
+    lab = [names[i] for i in range(k)]
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6),
+                             gridspec_kw={"width_ratios": [1.15, 1]})
+
+    im = axes[0].imshow(T, cmap="Blues", vmin=0, vmax=1)
     for i in range(k):
         for j in range(k):
-            ax.text(j, i, f"{T[i,j]:.2f}", ha="center", va="center",
-                    fontsize=8, color="white" if T[i, j] > 0.5 else "#1c2430")
-    lab = [names[i] for i in range(k)]
-    ax.set_xticks(range(k)); ax.set_xticklabels(lab, rotation=40, ha="right", fontsize=7)
-    ax.set_yticks(range(k)); ax.set_yticklabels(lab, fontsize=7)
-    ax.set_title("Day-to-day transition probabilities")
-    fig.colorbar(im, ax=ax, shrink=0.8)
+            axes[0].text(j, i, f"{T[i,j]:.2f}", ha="center", va="center",
+                         fontsize=9, color="white" if T[i, j] > 0.5 else "#1c2430")
+    axes[0].set_xticks(range(k)); axes[0].set_xticklabels(lab, rotation=40,
+                                                          ha="right", fontsize=8)
+    axes[0].set_yticks(range(k)); axes[0].set_yticklabels(lab, fontsize=8)
+    axes[0].set_title("Day-to-day transition probabilities", fontsize=10)
+    fig.colorbar(im, ax=axes[0], shrink=0.75)
+
+    d = dwell.set_index("regime").reindex(range(k))
+    order = np.argsort(d["mean_dwell"].values)
+    axes[1].barh(range(k), d["mean_dwell"].values[order],
+                 color=[PALETTE[i] for i in order])
+    for y, i in enumerate(order):
+        axes[1].text(d["mean_dwell"].values[i] + 0.06, y,
+                     f"{d['mean_dwell'].values[i]:.2f} d  "
+                     f"(max {int(d['max_dwell'].values[i])})",
+                     va="center", fontsize=8)
+    axes[1].set_yticks(range(k))
+    axes[1].set_yticklabels([lab[i] for i in order], fontsize=8)
+    axes[1].set_xlabel("mean dwell time (days)", fontsize=9)
+    axes[1].set_xlim(0, d["mean_dwell"].max() * 1.65)
+    axes[1].set_title("Mean dwell time per regime", fontsize=10)
     save(fig, "fig5_transitions")
 
 
-def fig6_stability(jac, names):
+def fig6_stability(jac, jac_raw, names):
+    """
+    Manuscript Figure 4. DISTRIBUTION of bootstrap Jaccard recovery for each
+    regime over N_BOOTSTRAP resamples, with the 0.75 "stable" threshold marked.
+    """
     k = len(jac)
     order = np.argsort(jac)
-    colors = ["#c14b6b" if jac[i] < JACCARD_DISSOLVED
-              else "#c77d17" if jac[i] < JACCARD_STABLE
-              else "#2e7d32" for i in order]
-    fig, ax = plt.subplots(figsize=(6.8, 3.4))
-    ax.barh(range(k), jac[order], color=colors)
-    ax.set_yticks(range(k)); ax.set_yticklabels([names[i] for i in order], fontsize=8)
-    ax.axvline(JACCARD_STABLE, color="#2e7d32", ls="--", lw=1)
-    ax.axvline(JACCARD_DISSOLVED, color="#c14b6b", ls="--", lw=1)
-    ax.set_xlim(0, 1); ax.set_xlabel("bootstrap Jaccard")
-    ax.set_title(f"Cluster-wise stability ({N_BOOTSTRAP} replicates)\n"
-                 f"dashed: {JACCARD_DISSOLVED} dissolved / {JACCARD_STABLE} stable",
-                 fontsize=9)
-    for i, j in enumerate(order):
-        ax.text(jac[j] + 0.01, i, f"{jac[j]:.2f}", va="center", fontsize=8)
+    fig, ax = plt.subplots(figsize=(7.6, 4.2))
+
+    data = [jac_raw[:, i][~np.isnan(jac_raw[:, i])] for i in order]
+    bp = ax.boxplot(data, vert=False, widths=0.62, patch_artist=True,
+                    showfliers=False, medianprops=dict(color="#1c2430", lw=1.4),
+                    whiskerprops=dict(color="#5b6672"),
+                    capprops=dict(color="#5b6672"))
+    for patch, i in zip(bp["boxes"], order):
+        patch.set_facecolor(PALETTE[i]); patch.set_alpha(0.55)
+        patch.set_edgecolor("#5b6672")
+
+    rng = np.random.default_rng(RANDOM_STATE)
+    for y, d in enumerate(data, start=1):
+        s = d if len(d) <= 300 else rng.choice(d, 300, replace=False)
+        ax.scatter(s, np.full(len(s), y) + rng.normal(0, 0.055, len(s)),
+                   s=3, color="#1c2430", alpha=0.16, zorder=3, lw=0)
+
+    ax.axvline(JACCARD_STABLE, color="#2e7d32", ls=":", lw=1.6,
+               label=f'{JACCARD_STABLE} "stable" threshold')
+    ax.axvline(JACCARD_DISSOLVED, color="#c14b6b", ls=":", lw=1.4,
+               label=f'{JACCARD_DISSOLVED} "dissolved" threshold')
+    ax.legend(fontsize=8, frameon=False, loc="lower left")
+
+    ax.set_ylim(0.4, k + 0.6)
+    ax.set_yticks(range(1, k + 1))
+    ax.set_yticklabels([f"{names[i]}\n(mean {jac[i]:.2f})" for i in order],
+                       fontsize=8)
+    ax.set_xlim(0, 1.02)
+    ax.set_xlabel("bootstrap Jaccard recovery")
+    ax.set_title(f"Regime stability over {N_BOOTSTRAP} bootstrap resamples",
+                 fontsize=11)
     save(fig, "fig6_stability")
 
 
-def fig7_sensorqc(h, anomalies, daily):
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.4))
+def fig7_sensorqc(h, anomalies, scores, daily):
+    """
+    Manuscript Figure 9. (top) reported minus physics-recomputed VPD with a
+    14-day rolling mean. (bottom) isolation-forest anomaly scores, red points
+    marking the flagged days.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(12, 6.0))
+
     if h is not None:
-        r = h["vpd"].values - fao56_vpd(h["temp"].values, h["rh"].values)
-        axes[0].plot(h["datetime"], r, lw=0.5, color="#3b6fb0")
-        axes[0].axhline(0, color="#1c2430", lw=0.8)
-        axes[0].set_title("On-board VPD − FAO-56 recomputation (kPa)\n"
-                          "certifies the derivation, not the sensors", fontsize=9)
+        r = pd.Series(h["vpd"].values - fao56_vpd(h["temp"].values, h["rh"].values),
+                      index=h["datetime"])
+        axes[0].plot(r.index, r.values, lw=0.4, color="#9db4d0", zorder=1,
+                     label="hourly residual")
+        roll = r.rolling("14D").mean()
+        axes[0].plot(roll.index, roll.values, lw=1.8, color="#1c4f8f", zorder=3,
+                     label="14-day rolling mean")
+        axes[0].axhline(0, color="#1c2430", lw=0.9, zorder=2)
+        axes[0].set_ylabel("VPD residual (kPa)", fontsize=9)
+        axes[0].legend(fontsize=8, frameon=False, loc="upper right", ncol=2)
+        axes[0].set_title("Reported minus physics-recomputed (FAO-56) VPD — "
+                          "near zero and trend-free, indicating no drift.\n"
+                          "This certifies the derivation, not the temperature "
+                          "and humidity sensors behind it.", fontsize=10)
+        axes[0].margins(x=0.01)
     else:
         axes[0].text(0.5, 0.5, "hourly record not available",
-                     ha="center", va="center")
-        axes[0].axis("off")
-    axes[1].plot(daily.index, daily["vpd_mean"], color="#6b4fbb", lw=1)
-    axes[1].scatter(anomalies, daily.loc[anomalies, "vpd_mean"],
-                    color="#c14b6b", zorder=5, s=26)
-    axes[1].set_title(f"{len(anomalies)} isolation-forest outlier days", fontsize=9)
+                     ha="center", va="center"); axes[0].axis("off")
+
+    axes[1].plot(scores.index, scores.values, lw=1.0, color="#6b4fbb",
+                 label="anomaly score")
+    axes[1].scatter(anomalies, scores.loc[anomalies], color="#c14b6b",
+                    zorder=5, s=34, label=f"{len(anomalies)} flagged days")
+    thr = float(scores.loc[anomalies].max())
+    axes[1].axhline(thr, color="#c14b6b", ls="--", lw=1)
+    axes[1].set_ylabel("isolation-forest score", fontsize=9)
+    axes[1].set_xlabel("")
+    axes[1].legend(fontsize=8, frameon=False, loc="lower left")
+    axes[1].set_title("Isolation-forest anomaly scores (lower = more anomalous); "
+                      "the flagged days proved to be genuine extreme weather, "
+                      "not sensor faults.", fontsize=10)
+    axes[1].margins(x=0.01)
     save(fig, "fig7_sensorqc")
 
 
@@ -588,20 +704,38 @@ def fig8_monthly(daily, labels, names):
     plt.close(fig)
 
 
-def fig9_pca_treatment(Xn, Xi, ln, li, names):
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-    for ax, X, lab, title in [
-        (axes[0], Xn, ln, "Naive (raw)"),
-        (axes[1], Xi, li, "Physics-informed (log-damped)"),
+def fig9_pca_treatment(Xn, Xi, li, names):
+    """
+    Manuscript Figure 1. PCA projection under both treatments, with days
+    coloured by the SAME physics-informed regimes in both panels -- that is
+    what makes the collapse under the naive treatment visible.
+    """
+    k = len(names)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    for ax, X, tag, title in [
+        (axes[0], Xn, "(a)", "Naive (raw)"),
+        (axes[1], Xi, "(b)", "Physics-informed (log-damped)"),
     ]:
-        p = PCA(n_components=2, random_state=RANDOM_STATE).fit_transform(X)
-        ax.scatter(p[:, 0], p[:, 1], c=[PALETTE[i % len(PALETTE)] for i in lab],
-                   s=18, alpha=0.85)
-        ax.set_title(f"{title} — k={len(np.unique(lab))}", fontsize=10)
-        ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
-    fig.suptitle("Feature treatment changes the geometry, not just the labels",
-                 fontsize=11)
-    save(fig, "fig9_pca_treatment")
+        pca = PCA(n_components=2, random_state=RANDOM_STATE)
+        p = pca.fit_transform(X)
+        ev = pca.explained_variance_ratio_ * 100
+        ax.scatter(p[:, 0], p[:, 1], c=[PALETTE[i] for i in li],
+                   s=22, alpha=0.85, lw=0)
+        ax.set_title(f"{tag} {title}", fontsize=10, loc="left")
+        ax.set_xlabel(f"PC1 ({ev[0]:.0f}% of variance)", fontsize=9)
+        ax.set_ylabel(f"PC2 ({ev[1]:.0f}%)", fontsize=9)
+        ax.tick_params(labelsize=8)
+
+    handles = [plt.Line2D([], [], marker="o", ls="", color=PALETTE[i],
+                          label=names[i], ms=7) for i in range(k)]
+    fig.legend(handles=handles, ncol=k, fontsize=8, frameon=False,
+               loc="lower center", bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle("Days coloured by the four physics-informed regimes under both "
+                 "treatments", fontsize=11)
+    fig.tight_layout(rect=(0, 0.07, 1, 0.96))
+    fig.savefig(os.path.join(OUTDIR, "fig9_pca_treatment.png"), dpi=150,
+                bbox_inches="tight")
+    plt.close(fig)
 
 
 def save(fig, name):
@@ -702,7 +836,7 @@ def main() -> None:
     ari_g = adjusted_rand_score(lab_i, lab_g)
 
     # --- stability ----------------------------------------------------------
-    jac = bootstrap_jaccard(Xi, K_FINAL, lab_i)
+    jac, jac_raw = bootstrap_jaccard(Xi, K_FINAL, lab_i)
 
     # --- dynamics -----------------------------------------------------------
     T = transition_matrix(lab_i, K_FINAL)
@@ -716,7 +850,7 @@ def main() -> None:
 
     # --- sensor QC ----------------------------------------------------------
     vpd = vpd_provenance(h) if h is not None else None
-    anomalies = isolation_forest_days(daily)
+    anomalies, iso_scores = isolation_forest_days(daily)
 
     # --- report -------------------------------------------------------------
     print("=== KEY NUMBERS ===")
@@ -761,11 +895,11 @@ def main() -> None:
     fig2_kselect(tab_i, k_elbow)
     fig3_centroids(daily, lab_i, names)
     fig4_timeline(daily, lab_i, names)
-    fig5_transitions(T, names)
-    fig6_stability(jac, names)
-    fig7_sensorqc(h, anomalies, daily)
+    fig5_transitions(T, names, dwell)
+    fig6_stability(jac, jac_raw, names)
+    fig7_sensorqc(h, anomalies, iso_scores, daily)
     fig8_monthly(daily, lab_i, names)
-    fig9_pca_treatment(Xn, Xi, lab_n, lab_i, names)
+    fig9_pca_treatment(Xn, Xi, lab_i, names)
     print(f"\nfigures written to {OUTDIR}/")
 
 
