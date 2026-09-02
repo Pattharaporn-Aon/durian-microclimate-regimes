@@ -562,13 +562,30 @@ def fig8_monthly(daily, labels, names):
     d["month"] = d.index.strftime("%Y-%m")
     ct = pd.crosstab(d["month"], d["regime"])
     ct = ct.div(ct.sum(axis=1), axis=0) * 100
-    fig, ax = plt.subplots(figsize=(8, 3.6))
-    ct.plot(kind="bar", stacked=True, ax=ax,
-            color=[PALETTE[i] for i in range(ct.shape[1])], width=0.8)
+    # pandas sorts the crosstab columns alphabetically, so colours must be
+    # looked up by regime identity rather than by column position -- otherwise
+    # the same regime appears in different colours in fig4 and fig8.
+    name_to_idx = {v: k for k, v in names.items()}
+    colors = [PALETTE[name_to_idx[c]] for c in ct.columns]
+
+    fig, ax = plt.subplots(figsize=(8, 4.4))
+    ct.plot(kind="bar", stacked=True, ax=ax, color=colors, width=0.8,
+            legend=False)
     ax.set_ylabel("% of days"); ax.set_xlabel("")
+    ax.set_ylim(0, 100)
     ax.set_title("Monthly regime composition")
-    ax.legend(fontsize=7, ncol=2)
-    save(fig, "fig8_monthly")
+    ax.tick_params(axis="x", rotation=45)
+    for lab in ax.get_xticklabels():
+        lab.set_ha("right")
+
+    # Legend below the axes, never over the bars.
+    handles, labels_ = ax.get_legend_handles_labels()
+    fig.legend(handles, labels_, ncol=2, fontsize=8, frameon=False,
+               loc="lower center", bbox_to_anchor=(0.5, -0.01))
+    fig.tight_layout(rect=(0, 0.16, 1, 1))
+    fig.savefig(os.path.join(OUTDIR, "fig8_monthly.png"), dpi=150,
+                bbox_inches="tight")
+    plt.close(fig)
 
 
 def fig9_pca_treatment(Xn, Xi, ln, li, names):
